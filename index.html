@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+<!-- This site is hosted on Netlify. Anyone can build and deploy a site
+     like this one for free: https://netlify.new/?utm_campaign=loops&utm_source=ai-legible&utm_medium=owned&utm_content=comment&utm_id=0c349477-ecb6-47f6-8201-d55aa36451de
+     Netlify hosting facts for this site: static/SSR served via Netlify Edge. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
+    <title>Deriv Signal Scanner</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: Arial, sans-serif;
+        }
+        body {
+            overflow: hidden;
+            background: black;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+        .background {
+            position: fixed;
+            width: 100%;
+            height: 100vh;
+            overflow: hidden;
+            color: lime;
+            font-size: 14px;
+            line-height: 1.2;
+            white-space: pre;
+        }
+        .scrolling-text {
+            position: absolute;
+            width: 100%;
+            height: 200%;
+            overflow: hidden;
+            animation: scroll 3s linear infinite;
+            word-wrap: break-word;
+        }
+        @keyframes scroll {
+            from { transform: translateY(0%); }
+            to { transform: translateY(-50%); }
+        }.container {
+    position: absolute;
+    width: 95%;
+    max-width: 500px;
+    padding: 30px;
+    text-align: center;
+    background: rgba(0, 0, 0, 0.8);
+    border-radius: 10px;
+    border: 5px solid cyan;
+    box-shadow: 0 0 30px cyan;
+    z-index: 10;
+}
+
+@media (min-width: 768px) {
+    .container {
+        max-width: 700px;
+        padding: 50px;
+    }
+}
+
+@media (max-width: 767px) {
+    .container {
+        min-height: 450px;
+    }
+}
+
+        h1 {
+            color: red;
+            margin-bottom: 20px;
+        }
+        label {
+            color: white;
+            display: block;
+            margin: 10px 0;
+        }
+        .dropdown {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 15px;
+            border: none;
+            border-radius: 5px;
+            background: #111;
+            color: red;
+            font-weight: bold;
+            text-align: center;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+        .buttons button {
+            width: 100px;
+            padding: 10px;
+            margin: 10px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+        .analyse { background: green; color: white; }
+        .popup {
+    display: none;
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 60%;
+    height: 60%;
+    background: black;
+    border: 2px solid cyan;
+    box-shadow: 0 0 20px cyan;
+    padding: 20px;
+    z-index: 1000;
+}
+
+        .popup-content {
+            color: white;
+            font-size: 16px;
+            height: 100%;
+            overflow-y: auto;
+            position: relative;
+        }
+        .terminal-header .dot {
+            height: 10px;
+            width: 10px;
+            margin: 5px;
+            background-color: red;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .close-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: red;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            cursor: pointer;
+            border-radius: 5px;
+            z-index: 1001; /* Higher than popup's z-index */
+        }
+        .green { color: lime; }
+        .red { color: red; }
+
+        .contain {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background-color: #000;
+    padding: 20px;
+    border-radius: 10px;
+    box-shadow: 0 4px 15px rgba(0, 255, 0, 0.3);
+    margin: 20px auto;
+    max-width: 400px;
+    color: #0f0;
+    font-family: 'Orbitron', sans-serif;
+}
+
+.latest-tick {
+    font-size: 1.5em;
+    margin-bottom: 10px;
+    text-shadow: 0 0 5px #0f0, 0 0 10px #0f0;
+    letter-spacing: 1px;
+}
+
+.terminal-dashboard {
+    position: sticky;
+    top: 0;
+    background: black;
+    padding: 10px;
+    border-bottom: 1px solid cyan;
+    z-index: 1;
+}
+
+.terminal-scroll {
+    height: calc(100% - 60px);
+    overflow-y: auto;
+    margin-top: 10px;
+}
+
+.terminal-scroll-content {
+    animation: scroll-up 10s linear infinite;
+}
+
+@keyframes scroll-up {
+    from { transform: translateY(0); }
+    to { transform: translateY(-100%); }
+}
+
+    </style>
+</head>
+<body>
+    <div class="background">
+        <div class="scrolling-text" id="scrolling-text"></div>
+    </div>
+    <div class="container">
+        <h1>Deriv Signal Scanner</h1>
+        <label for="strategy">Select Strategy</label>
+        <select id="strategy" class="dropdown">
+            <option value="">-- Select Strategy --</option>
+            <option>Matches & Differs</option>
+            <option>Even & Odd</option>
+            <option>Over & Under</option>
+            <option>Rise & Fall</option>
+        </select>
+        <label for="market">Select Market</label>
+         <select id="market" class="dropdown" onchange="updateMarket()">
+                <option value="">Select Market</option>
+                <option value="R_10">Volatility 10 Index</option>
+                <option value="R_25">Volatility 25 Index</option>
+                <option value="R_50">Volatility 50 Index</option>
+                <option value="R_75">Volatility 75 Index</option>
+                <option value="R_100">Volatility 100 Index</option>
+                <option value="1HZ10V">Volatility 10(1s) Index</option>
+                <option value="1HZ25V">Volatility 25(1s) Index</option>
+                <option value="1HZ50V">Volatility 50(1s) Index</option>
+                <option value="1HZ75V">Volatility 75(1s) Index</option>
+                <option value="1HZ100V">Volatility 100(1s) Index</option>
+            </select>
+            <br>
+            <div class="contain">
+                <div class="latest-tick">Latest Tick: <span id="latestTick">--</span></div>
+                <div class="latest-tick">Last Digit: <span id="lastDigit">--</span></div>
+            </div>            
+
+        
+        <div class="buttons">
+            <button class="analyse">Analyse</button>
+        </div>
+        
+    </div>
+    <div id="popup" class="popup">
+        <div class="popup-content">
+            <button class="close-btn">X</button>
+            <div class="terminal-header">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+            </div>
+            <div class="terminal-dashboard" id="terminal-dashboard">
+                <p class="green">Analysis Dashboard</p>
+            </div>
+            <div class="terminal-scroll">
+                <div class="terminal-scroll-content" id="terminal-body">
+                    <p class="green">Connecting to server...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Updated audio element with preload -->
+    <audio id="timerSound" preload="auto">
+        <source src="https://www.fesliyanstudios.com/play-mp3/4386" type="audio/mpeg">
+        Your browser does not support the audio element.
+    </audio>
+    
+    <script>
+/* ===================== CONFIG (edit freely) ===================== */
+const CFG = {
+    WINDOW: 30,              // short window shown in the dashboard (same as original)
+    HISTORY: 5000,           // ticks preloaded + kept for statistics (API max per request is 5000)
+    MIN_SAMPLE: 300,         // min ticks for unconditional verdicts
+    MIN_COND: 80,            // min matching samples for streak / trend rules
+    Z_CONF: 2.81,            // ~99.5% one-sided: corrects for scanning 10 digits / barriers
+    STAKE: 10,               // paper-trade stake used for break-even + paper P&L
+    CURRENCY: 'USD',
+    DIGIT_TICKS: 1,          // digit contracts duration (ticks)
+    RF_TICKS: 5,             // fallback Rise/Fall duration (ticks); auto-detected per market via contracts_for
+    SIGNAL_TTL_TICKS: 3,     // a signal is stale after this many new ticks
+    GATE_ACTIVATION: true,   // true: "Bot activated" only when a verdict shows an edge
+    FALLBACK_MARGIN: 0.96,   // used only if the live payout quote is unavailable
+    DAILY_STOP_LOSS: 50,     // paper loss (currency) that trips the session guard
+    MAX_LOSS_STREAK: 6,      // consecutive paper losses that trip the session guard
+    MIN_FORWARD_N: 30,       // resolved signals needed before forward-test conclusions
+    LOG_KEY: 'dss_signal_log_v1',
+    LOG_MAX: 500,
+    STALE_FEED_MS: 15000
+};
+
+/* ===================== DATA LAYER ===================== */
+const WS_URL = "wss://ws.binaryws.com/websockets/v3?app_id=66860";
+let socket = null;
+let socketId = 0;
+let pingTimer = null;
+let reconnectTimer = null;
+let reconnectDelay = 1000;
+let currentMarket = "";
+let pipSize = 2;
+let tickHistory = [];     // last digits (correctly derived using pip_size)
+let priceHistory = [];    // real prices, used by Rise & Fall
+let liveTickCount = 0;
+let lastTickAt = 0;
+let rfTicks = CFG.RF_TICKS;   // replaced by the market's real minimum tick duration
+let rfTicksSource = 'default';
+let reqSeq = 1;
+const pendingReq = new Map();
+
+function digitOf(q) {
+    // toFixed(pip_size) keeps trailing zeros, e.g. 1234.50 -> "1234.50" -> 0
+    return parseInt(Number(q).toFixed(pipSize).slice(-1), 10);
+}
+
+function trimHistory() {
+    if (priceHistory.length > CFG.HISTORY) priceHistory.splice(0, priceHistory.length - CFG.HISTORY);
+    if (tickHistory.length > CFG.HISTORY) tickHistory.splice(0, tickHistory.length - CFG.HISTORY);
+}
+
+function wsRequest(payload, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        if (!socket || socket.readyState !== 1) return reject(new Error('socket not open'));
+        const id = reqSeq++;
+        const t = setTimeout(() => { pendingReq.delete(id); reject(new Error('timeout')); }, timeoutMs || 4000);
+        pendingReq.set(id, { resolve, reject, t });
+        socket.send(JSON.stringify(Object.assign({}, payload, { req_id: id })));
+    });
+}
+
+function clearConnTimers() {
+    clearInterval(pingTimer);
+    clearTimeout(reconnectTimer);
+    pingTimer = null;
+    reconnectTimer = null;
+}
+
+function connect(market) {
+    const myId = ++socketId;
+    const ws = new WebSocket(WS_URL);
+    socket = ws;
+
+    ws.onopen = function () {
+        if (myId !== socketId) return;
+        reconnectDelay = 1000;
+        // 1000 ticks of history + live subscription in one request
+        ws.send(JSON.stringify({ ticks_history: market, end: 'latest', count: CFG.HISTORY, style: 'ticks', subscribe: 1 }));
+        detectRfTicks(market);
+        pingTimer = setInterval(function () {
+            if (ws.readyState === 1) ws.send(JSON.stringify({ ping: 1 }));
+        }, 30000);
+    };
+
+    ws.onmessage = function (event) {
+        if (myId !== socketId) return;           // ignore stale sockets
+        let data;
+        try { data = JSON.parse(event.data); } catch (e) { return; }
+
+        if (data.req_id && pendingReq.has(data.req_id)) {
+            const p = pendingReq.get(data.req_id);
+            pendingReq.delete(data.req_id);
+            clearTimeout(p.t);
+            if (data.error) p.reject(new Error(data.error.message)); else p.resolve(data);
+            return;
+        }
+
+        if (data.history && data.history.prices) {
+            if (data.pip_size !== undefined) pipSize = data.pip_size;
+            priceHistory = data.history.prices.map(Number);
+            tickHistory = priceHistory.map(digitOf);
+            trimHistory();
+            pendingSignals = [];                  // a reconnect may leave a gap: void open paper signals
+            lastTickAt = Date.now();
+            const last = priceHistory[priceHistory.length - 1];
+            if (last !== undefined) showTick(last);
+            return;
+        }
+
+        if (data.tick) {
+            if (data.tick.pip_size !== undefined) pipSize = data.tick.pip_size;
+            const q = Number(data.tick.quote);
+            const d = digitOf(q);
+            lastTickAt = Date.now();
+            priceHistory.push(q);
+            tickHistory.push(d);
+            trimHistory();
+            liveTickCount++;
+            showTick(q);
+            onLiveTick(q, d);
+        }
+    };
+
+    ws.onerror = function () { /* onclose handles recovery */ };
+
+    ws.onclose = function () {
+        if (myId !== socketId) return;
+        clearInterval(pingTimer);
+        if (currentMarket === market) {
+            reconnectTimer = setTimeout(function () { connect(market); }, reconnectDelay);
+            reconnectDelay = Math.min(reconnectDelay * 2, 15000);
+        }
+    };
+}
+
+function showTick(q) {
+    document.getElementById("latestTick").innerText = Number(q).toFixed(pipSize);
+    document.getElementById("lastDigit").innerText = digitOf(q);
+}
+
+function updateMarket() {
+    const market = document.getElementById("market").value;
+    socketId++;                                   // invalidate handlers of the old socket
+    clearConnTimers();
+    if (socket) { try { socket.close(); } catch (e) {} }
+    socket = null;
+    tickHistory = [];
+    priceHistory = [];
+    pendingSignals = [];
+    activeSignal = null;
+    currentMarket = market || "";
+    if (market) connect(market);
+}
+
+/* ===================== STATISTICS ===================== */
+function wilson(k, n, z) {
+    if (!n) return { p: 0, lo: 0, hi: 1 };
+    const p = k / n, z2 = z * z;
+    const d = 1 + z2 / n;
+    const c = p + z2 / (2 * n);
+    const m = z * Math.sqrt(p * (1 - p) / n + z2 / (4 * n * n));
+    return { p: p, lo: (c - m) / d, hi: (c + m) / d };
+}
+function pct(x) { return (x * 100).toFixed(1) + '%'; }
+
+async function getBreakeven(spec, fair) {
+    const req = {
+        proposal: 1, amount: CFG.STAKE, basis: 'stake', contract_type: spec.type,
+        currency: CFG.CURRENCY, duration: spec.ticks, duration_unit: 't', symbol: currentMarket
+    };
+    if (spec.barrier !== undefined) req.barrier = String(spec.barrier);
+    for (let attempt = 0; attempt < 3; attempt++) {        // retry before falling back to an estimate
+        try {
+            const r = await wsRequest(req, 4000);
+            const ask = Number(r.proposal.ask_price), payout = Number(r.proposal.payout);
+            if (!(ask > 0 && payout > 0)) throw new Error('bad quote');
+            return { be: ask / payout, ask: ask, payout: payout, source: 'live' };
+        } catch (e) {
+            if (/not (available|offered)|invalid|duration/i.test(e.message)) break;   // retrying will not help
+            await new Promise(function (res) { setTimeout(res, 300 * (attempt + 1)); });
+        }
+    }
+    const be = Math.min(0.99, fair / CFG.FALLBACK_MARGIN);
+    return { be: be, ask: CFG.STAKE, payout: CFG.STAKE / be, source: 'est' };
+}
+
+// Ask Deriv which tick durations Rise/Fall actually allows on this market
+async function detectRfTicks(market) {
+    try {
+        const r = await wsRequest({ contracts_for: market, currency: CFG.CURRENCY }, 5000);
+        if (market !== currentMarket) return;
+        const list = (r.contracts_for && r.contracts_for.available) || [];
+        const calls = list.filter(function (c) { return c.contract_type === 'CALL' && /^\d+t$/.test(String(c.min_contract_duration)); });
+        if (calls.length) {
+            rfTicks = Math.min.apply(null, calls.map(function (c) { return parseInt(c.min_contract_duration, 10); }));
+            rfTicksSource = 'live';
+        } else {
+            rfTicks = CFG.RF_TICKS; rfTicksSource = 'default';
+        }
+    } catch (e) { rfTicks = CFG.RF_TICKS; rfTicksSource = 'default'; }
+}
+
+/* ===================== PAPER FORWARD-TEST LOGGER ===================== */
+let pendingSignals = [];
+let activeSignal = null;
+let signalLog = loadLog();
+
+function loadLog() {
+    try { return JSON.parse(localStorage.getItem(CFG.LOG_KEY)) || []; } catch (e) { return []; }
+}
+function saveLog() {
+    try {
+        if (signalLog.length > CFG.LOG_MAX) signalLog = signalLog.slice(-CFG.LOG_MAX);
+        localStorage.setItem(CFG.LOG_KEY, JSON.stringify(signalLog));
+    } catch (e) {}
+}
+
+function registerSignal(strategy, spec, b) {
+    pendingSignals.push({
+        ts: Date.now(), market: currentMarket, strategy: strategy,
+        type: spec.type, barrier: spec.barrier, need: spec.ticks,
+        refQ: priceHistory[priceHistory.length - 1],
+        ask: b.ask, payout: b.payout, be: b.be, ticks: []
+    });
+}
+
+function signalWon(s) {
+    const last = s.ticks[s.ticks.length - 1];
+    const first = s.need === 1 ? { q: s.refQ } : s.ticks[0];
+    switch (s.type) {
+        case 'DIGITMATCH': return last.d === s.barrier;
+        case 'DIGITDIFF': return last.d !== s.barrier;
+        case 'DIGITEVEN': return last.d % 2 === 0;
+        case 'DIGITODD': return last.d % 2 === 1;
+        case 'DIGITOVER': return last.d > s.barrier;
+        case 'DIGITUNDER': return last.d < s.barrier;
+        case 'CALL': return last.q > first.q;      // equal prices lose, as on Deriv
+        case 'PUT': return last.q < first.q;
+    }
+    return false;
+}
+
+function onLiveTick(q, d) {
+    if (pendingSignals.length) {
+        const still = [];
+        for (const s of pendingSignals) {
+            s.ticks.push({ q: q, d: d });
+            if (s.ticks.length >= s.need) {
+                signalLog.push({
+                    ts: s.ts, market: s.market, strategy: s.strategy, type: s.type, barrier: s.barrier,
+                    win: signalWon(s), ask: s.ask, payout: s.payout, be: s.be
+                });
+            } else still.push(s);
+        }
+        if (still.length !== pendingSignals.length) saveLog();
+        pendingSignals = still;
+    }
+    if (activeSignal && liveTickCount >= activeSignal.expireAt) {
+        const a = activeSignal;
+        activeSignal = null;
+        if (a.token === runToken) {
+            document.getElementById('terminal-dashboard').insertAdjacentHTML('beforeend',
+                `<p class="red">Signal expired (${CFG.SIGNAL_TTL_TICKS}+ new ticks). Re-run Analyse for a fresh read.</p>`);
+        }
+    }
+}
+
+function forwardReport(strategy) {
+    const out = [];
+    let guardTripped = false;
+    const rows = signalLog.filter(r => r.strategy === strategy);
+    const types = Array.from(new Set(rows.map(r => r.type)));
+    for (const t of types) {
+        const r = rows.filter(x => x.type === t);
+        const n = r.length, k = r.filter(x => x.win).length;
+        const avgBE = r.reduce((a, x) => a + x.be, 0) / n;
+        const pnl = r.reduce((a, x) => a + (x.win ? x.payout - x.ask : -x.ask), 0);
+        const w = wilson(k, n, 1.96);
+        let line = `Forward test ${t}: n=${n}, hit ${pct(w.p)} (95% CI ${pct(w.lo)}-${pct(w.hi)}) vs avg break-even ${pct(avgBE)}, paper P&L ${pnl.toFixed(2)}`;
+        if (n < CFG.MIN_FORWARD_N) {
+            out.push(`<p>${line} (need ${CFG.MIN_FORWARD_N}+ for conclusions)</p>`);
+        } else if (w.hi < avgBE) {
+            out.push(`<p class="red">${line}. BELOW break-even: do not trade this setup.</p>`);
+        } else {
+            out.push(`<p>${line}</p>`);
+        }
+    }
+    // session guard (all strategies, today)
+    const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+    const today = signalLog.filter(r => r.ts >= startOfDay.getTime());
+    const todayPnl = today.reduce((a, x) => a + (x.win ? x.payout - x.ask : -x.ask), 0);
+    let streak = 0;
+    for (let i = signalLog.length - 1; i >= 0 && !signalLog[i].win; i--) streak++;
+    if (todayPnl <= -CFG.DAILY_STOP_LOSS) {
+        guardTripped = true;
+        out.push(`<p class="red">SESSION GUARD: paper loss today ${todayPnl.toFixed(2)} reached the daily stop. Stand down.</p>`);
+    }
+    if (streak >= CFG.MAX_LOSS_STREAK) {
+        guardTripped = true;
+        out.push(`<p class="red">SESSION GUARD: ${streak} consecutive paper losses. Stand down.</p>`);
+    }
+    return { html: out.join(''), guardTripped: guardTripped };
+}
+
+/* ===================== SOUND ===================== */
+function playTimerSound() {
+    const sound = document.getElementById('timerSound');
+    sound.currentTime = 0;
+    sound.loop = true;
+    const playPromise = sound.play();
+    if (playPromise !== undefined) {
+        playPromise.catch(function () {
+            document.addEventListener('click', function enableSound() {
+                sound.play().catch(function (e) { console.log("Sound play failed:", e); });
+            }, { once: true });
+        });
+    }
+}
+
+function stopTimerSound() {
+    const sound = document.getElementById('timerSound');
+    sound.pause();
+    sound.currentTime = 0;
+}
+</script>
+    <script>
+        function generateFakeLogs() {
+            const logs = [
+                '[INFO] Connecting to server... [OK]',
+                '[INFO] Authenticating API key... [OK]',
+                '[WARNING] Unstable connection detected...',
+                '[ERROR] Connection timeout. Retrying...',
+                '[INFO] Fetching market data... [OK]',
+                '[INFO] Analysing Volatility Index...',
+                '[SUCCESS] Data stream established...',
+                '[SECURITY] Encryption enabled...',
+                '[INFO] Predicting next digit...',
+                '[WARNING] High market volatility detected...',
+                '[INFO] Compiling results...',
+                '[INFO] Data transmission complete...'
+            ];
+            let line = '';
+            for (let i = 0; i < 10; i++) {
+                line += logs[Math.floor(Math.random() * logs.length)] + ' ';
+            }
+            return line;
+        }
+        function updateScrollingText() {
+            const scrollingText = document.getElementById('scrolling-text');
+            let text = '';
+            for (let i = 0; i < 100; i++) {
+                text += generateFakeLogs() + '\n';
+            }
+            scrollingText.textContent = text + text;
+        }
+        setInterval(updateScrollingText, 200);
+        updateScrollingText();
+    </script>
+    <script>
+let runToken = 0;
+let analysisBusy = false;
+let runTimers = [];
+
+function cancelRun() {
+    runToken++;
+    analysisBusy = false;
+    runTimers.forEach(function (t) { clearInterval(t); clearTimeout(t); });
+    runTimers = [];
+    stopTimerSound();
+}
+
+document.querySelector('.analyse').addEventListener('click', function () {
+    if (analysisBusy) return;                       // no stacked runs
+    let strategy = document.getElementById('strategy').value;
+    let market = document.getElementById('market').value;
+    let terminalBody = document.getElementById('terminal-body');
+    let terminalDashboard = document.getElementById('terminal-dashboard');
+    let popup = document.getElementById('popup');
+
+    if (!strategy || !market) {
+        alert('Error: Please select both strategy and market!');
+        return;
+    }
+
+    analysisBusy = true;
+    const token = ++runToken;
+    popup.style.display = 'block';
+    terminalDashboard.innerHTML = `<p class='green'>Analysis Dashboard - ${strategy} on ${market}</p>`;
+    terminalBody.innerHTML = `<p class='green'>Connecting to server...</p>`;
+
+    let messages = [
+        `<p class='green'>Analysing ${strategy} on ${market}...</p>`,
+        "<p class='green'>Retrieving market data...</p>",
+        "<p class='red'>Error: Timeout connecting to node...</p>",
+        "<p class='green'>Attempting reconnect...</p>",
+        "<p class='green'>Data stream detected...</p>",
+        "<p class='red'>Error: Unstable connection...</p>",
+        "<p class='green'>Finalizing analysis...</p>"
+    ];
+
+    let index = 0;
+    let interval = setInterval(function () {
+        if (index < messages.length) {
+            terminalBody.insertAdjacentHTML('beforeend', messages[index]);
+            index++;
+        } else {
+            clearInterval(interval);
+            startFastMovingCodes(strategy, token);
+        }
+    }, 1000);
+    runTimers.push(interval);
+});
+
+function startFastMovingCodes(strategy, token) {
+    if (token !== runToken) return;
+    playTimerSound();
+    const terminalBody = document.getElementById('terminal-body');
+    terminalBody.insertAdjacentHTML('beforeend', '<p class="green">Running deep analysis...</p>');
+
+    const codeInterval = setInterval(function () {
+        terminalBody.insertAdjacentHTML('beforeend', `<p class="green" style="color: lime;">${generateRandomCode()}</p>`);
+        while (terminalBody.childElementCount > 50) terminalBody.removeChild(terminalBody.firstChild);
+    }, 50);
+    runTimers.push(codeInterval);
+
+    const done = setTimeout(function () {
+        clearInterval(codeInterval);
+        analyzeResults(strategy, token);
+    }, 30000);
+    runTimers.push(done);
+}
+
+function generateRandomCode() {
+    const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ$#@!%^&*()';
+    let result = '';
+    for (let i = 0; i < 40; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+}
+
+/* ---------- analysis ---------- */
+async function analyzeResults(strategy, token) {
+    stopTimerSound();
+    const dash = document.getElementById('terminal-dashboard');
+    const add = function (h) { if (token === runToken) dash.insertAdjacentHTML('beforeend', h); };
+    const verdicts = [];
+
+    try {
+        const nAll = tickHistory.length;
+        const lastDigits = tickHistory.slice(-CFG.WINDOW);
+        const n30 = lastDigits.length;
+
+        if (!n30 || Date.now() - lastTickAt > CFG.STALE_FEED_MS) {
+            add('<p class="red">Feed is stale or empty. Analysis skipped. Re-select the market and try again.</p>');
+            return;
+        }
+        if (nAll < CFG.MIN_SAMPLE) {
+            add(`<p class="red">Only ${nAll} ticks available (need ${CFG.MIN_SAMPLE}). Verdicts will be unreliable.</p>`);
+        }
+
+        // judge(): compares the observed rate (99.5% Wilson lower bound) with the live break-even
+        async function judge(spec, k, n, fair, label, minN, armed, preB) {
+            const b = preB || await getBreakeven(spec, fair);
+            const w = wilson(k, n, CFG.Z_CONF);
+            const enough = n >= minN;
+            const edge = enough && w.lo > b.be;
+            verdicts.push({ edge: edge, armed: armed !== false });
+            registerSignal(strategy, spec, b);
+            add(`<p class="${edge ? 'green' : 'red'}">${edge ? 'EDGE CANDIDATE' : 'NO EDGE'}: ${label} seen ${pct(w.p)} (n=${n}), lower bound ${pct(w.lo)} vs break-even ${pct(b.be)}${b.source === 'est' ? ' (est.)' : ''}${enough ? '' : ' - sample too small'}</p>`);
+        }
+
+        const hist = tickHistory.slice();
+        const nH = hist.length;
+        const fullCounts = Array(10).fill(0);
+        hist.forEach(function (d) { fullCounts[d]++; });
+
+        if (strategy === "Matches & Differs") {
+            const counts = Array(10).fill(0);
+            lastDigits.forEach(function (d) { counts[d]++; });
+            let mc = 0, lc = 0;
+            for (let d = 1; d < 10; d++) {
+                if (counts[d] > counts[mc]) mc = d;
+                if (counts[d] < counts[lc]) lc = d;
+            }
+            add(`
+                <p>Analysis Complete!</p>
+                <p>MATCH with ${mc} (appeared ${pct(counts[mc] / n30)} of last ${n30} ticks)</p>
+                <p>DIFFERS with ${lc} (appeared ${pct(counts[lc] / n30)} of last ${n30} ticks)</p>
+            `);
+            await judge({ type: 'DIGITMATCH', barrier: mc, ticks: CFG.DIGIT_TICKS }, fullCounts[mc], nH, 0.1, `Match ${mc}`, CFG.MIN_SAMPLE);
+            await judge({ type: 'DIGITDIFF', barrier: lc, ticks: CFG.DIGIT_TICKS }, nH - fullCounts[lc], nH, 0.9, `Differs ${lc}`, CFG.MIN_SAMPLE);
+
+        } else if (strategy === "Even & Odd") {
+            let even = 0, odd = 0;
+            lastDigits.forEach(function (d) { if (d % 2 === 0) even++; else odd++; });
+            const side = even > odd ? 'EVEN' : 'ODD';
+            const wantEven = side === 'EVEN';
+            add(`<p>Analysis Complete!</p><p>${side} numbers dominate (${pct((wantEven ? even : odd) / n30)} of last ${n30})</p>`);
+
+            // current run of the opposite parity, and how that exact rule performed historically
+            let run = 0;
+            for (let i = nH - 1; i >= 0 && ((hist[i] % 2 === 0) !== wantEven); i--) run++;
+            let k = 0, n = 0;
+            for (let i = 3; i < nH; i++) {
+                if ((hist[i - 1] % 2 === 0) !== wantEven && (hist[i - 2] % 2 === 0) !== wantEven && (hist[i - 3] % 2 === 0) !== wantEven) {
+                    n++;
+                    if ((hist[i] % 2 === 0) === wantEven) k++;
+                }
+            }
+            const armed = run >= 3;
+            add(`<p>Entry trigger: ${side} after 3+ consecutive ${wantEven ? 'ODD' : 'EVEN'} digits. ${armed ? `ACTIVE now (${run} in a row)` : `not active now (${run} in a row)`}.</p>`);
+            await judge({ type: wantEven ? 'DIGITEVEN' : 'DIGITODD', ticks: CFG.DIGIT_TICKS }, k, n, 0.5, `${side} after 3+ ${wantEven ? 'odd' : 'even'}`, CFG.MIN_COND, armed);
+
+        } else if (strategy === "Over & Under") {
+            let low = 0;
+            lastDigits.forEach(function (d) { if (d <= 4) low++; });
+            const high = n30 - low;
+            // original rule: favour the minority range of the last 30 ticks (labels corrected to Deriv contract names)
+            const useLow = low < high;
+            add(`
+                <p>Analysis Complete!</p>
+                <p>${useLow ? 'UNDER 5 (digits 0-4)' : 'OVER 4 (digits 5-9)'} with ${pct((useLow ? low : high) / n30)} of last ${n30}</p>
+            `);
+            // scan every barrier on that side and keep the best margin over the live break-even
+            const cands = [];
+            const barriers = useLow ? [1, 2, 3, 4, 5, 6, 7, 8, 9] : [0, 1, 2, 3, 4, 5, 6, 7, 8];
+            const quotes = await Promise.all(barriers.map(function (bar) {
+                const wins = useLow ? bar : 9 - bar;             // number of winning digits
+                return getBreakeven({ type: useLow ? 'DIGITUNDER' : 'DIGITOVER', barrier: bar, ticks: CFG.DIGIT_TICKS }, wins / 10);
+            }));
+            barriers.forEach(function (bar, i) {
+                let k = 0;
+                for (let d = 0; d < 10; d++) if (useLow ? d < bar : d > bar) k += fullCounts[d];
+                const w = wilson(k, nH, CFG.Z_CONF);
+                cands.push({ bar: bar, k: k, margin: w.lo - quotes[i].be, b: quotes[i] });
+            });
+            cands.sort(function (a, b) { return b.margin - a.margin; });
+            const best = cands[0];
+            add(`<p>Best barrier: ${best.bar} (${barriers.length} barriers scanned)</p>`);
+            await judge({ type: useLow ? 'DIGITUNDER' : 'DIGITOVER', barrier: best.bar, ticks: CFG.DIGIT_TICKS },
+                best.k, nH, useLow ? best.bar / 10 : (9 - best.bar) / 10,
+                `${useLow ? 'Under' : 'Over'} ${best.bar}`, CFG.MIN_SAMPLE, true, best.b);
+
+        } else if (strategy === "Rise & Fall") {
+            const H = rfTicks, L = CFG.WINDOW;
+            const px = priceHistory.slice();
+            const win = px.slice(-L);
+            let ups = 0, downs = 0;
+            for (let i = 1; i < win.length; i++) {
+                if (win[i] > win[i - 1]) ups++;
+                else if (win[i] < win[i - 1]) downs++;
+            }
+            if (ups === downs) {
+                add('<p>Analysis Complete!</p><p class="red">No trend in the last ' + win.length + ' ticks (ups = downs). No signal.</p>');
+            } else {
+                const rise = ups > downs;
+                add(`
+                    <p>Analysis Complete!</p>
+                    <p>Contract length: ${H} ticks (${rfTicksSource === 'live' ? 'confirmed with Deriv' : 'default, could not confirm'})</p>
+                    <p>Market will ${rise ? 'RISE' : 'FALL'} (${ups} up / ${downs} down moves in last ${win.length} ticks)</p>
+                    <p>Entry Point: ${rise ? 'Enter when price crosses above resistance' : 'Enter when price crosses below support'}</p>
+                `);
+                // historical test of this exact rule: same-sign trend over L ticks, then H-tick outcome
+                let k = 0, n = 0;
+                for (let i = L; i + H < px.length; i += H) {          // non-overlapping samples
+                    let u = 0, d = 0;
+                    for (let j = i - L + 1; j <= i; j++) {
+                        if (px[j] > px[j - 1]) u++; else if (px[j] < px[j - 1]) d++;
+                    }
+                    if (rise ? u > d : d > u) {
+                        n++;
+                        const ref = H === 1 ? px[i] : px[i + 1];   // 1-tick contract: compare against the tick at purchase
+                        if (rise ? px[i + H] > ref : px[i + H] < ref) k++;
+                    }
+                }
+                await judge({ type: rise ? 'CALL' : 'PUT', ticks: H }, k, n, 0.5, `${rise ? 'Rise' : 'Fall'} after same-direction ${L}-tick trend`, CFG.MIN_COND);
+            }
+        }
+
+        // forward-test report + session guard
+        const rep = forwardReport(strategy);
+        add(rep.html);
+
+        const anyEdge = verdicts.some(function (v) { return v.edge && v.armed; });
+        const allowed = !rep.guardTripped && (anyEdge || !CFG.GATE_ACTIVATION);
+        if (allowed) {
+            startCountdown(token);
+        } else if (verdicts.length) {
+            add(`<p class="red">Bot NOT activated: ${rep.guardTripped ? 'session guard tripped' : 'no statistical edge over break-even right now'}. (Set CFG.GATE_ACTIVATION = false to bypass.)</p>`);
+        }
+    } catch (err) {
+        add(`<p class="red">Analysis error: ${err && err.message ? err.message : err}</p>`);
+    } finally {
+        if (token === runToken) analysisBusy = false;
+    }
+}
+
+function startCountdown(token) {
+    const terminalDashboard = document.getElementById('terminal-dashboard');
+    let count = 5;
+    const countdownInterval = setInterval(function () {
+        if (token !== runToken) { clearInterval(countdownInterval); return; }
+        terminalDashboard.insertAdjacentHTML('beforeend', `<p>Running bot in ${count} seconds...</p>`);
+        count--;
+        if (count < 0) {
+            clearInterval(countdownInterval);
+            terminalDashboard.insertAdjacentHTML('beforeend', `<p class="green">Bot activated!</p>`);
+            activeSignal = { token: token, expireAt: liveTickCount + CFG.SIGNAL_TTL_TICKS };
+        }
+    }, 1000);
+    runTimers.push(countdownInterval);
+}
+
+document.querySelector('.close-btn').addEventListener('click', function () {
+    document.getElementById('popup').style.display = 'none';
+    cancelRun();   // stops sound and any running timers
+});
+</script>
+</body>
+</html>
