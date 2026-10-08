@@ -286,7 +286,24 @@ const CFG = {
 };
 
 /* ===================== DATA LAYER ===================== */
-const WS_URL = "wss://ws.binaryws.com/websockets/v3?app_id=66860";
+// Endpoints tried in order. The first is Deriv's current public market-data channel (no login, no app_id);
+// the rest are the legacy hosts/app_ids. The one that works is remembered for next time.
+const WS_ENDPOINTS = [
+    "wss://api.derivws.com/trading/v1/options/ws/public",
+    "wss://ws.derivws.com/websockets/v3?app_id=66860",
+    "wss://ws.derivws.com/websockets/v3?app_id=1089",
+    "wss://ws.binaryws.com/websockets/v3?app_id=66860",
+    "wss://ws.binaryws.com/websockets/v3?app_id=1089"
+];
+const ENDPOINT_KEY = 'dss_ws_ok';
+let endpointList = (function () {
+    let ok = null;
+    try { ok = localStorage.getItem(ENDPOINT_KEY); } catch (e) {}
+    return ok && WS_ENDPOINTS.indexOf(ok) > -1 ? [ok].concat(WS_ENDPOINTS.filter(function (u) { return u !== ok; })) : WS_ENDPOINTS.slice();
+})();
+let epIdx = 0;
+const DEFAULT_PIPS = { R_10: 3, R_25: 3, R_50: 4, R_75: 4, R_100: 2, '1HZ10V': 2, '1HZ25V': 2, '1HZ50V': 2, '1HZ75V': 2, '1HZ100V': 2 };
+let symKey = null;            // 'underlying_symbol' (new API) or 'symbol' (legacy), chosen per endpoint
 let socket = null;
 let socketId = 0;
 let pingTimer = null;
@@ -330,7 +347,7 @@ function clearConnTimers() {
     reconnectTimer = null;
 }
 
-const feed = { mode: 'none', lastError: '', msgs: 0, connectAt: 0, historyCount: CFG.HISTORY, triedFallback: false };
+const feed = { mode: 'none', lastError: '', msgs: 0, connectAt: 0, historyCount: CFG.HISTORY, triedFallback: false, gotData: false, rotations: 0, url: '' };
 let historyTimer = null;
 
 function sendHistoryRequest(ws, market, count) {
@@ -380,7 +397,11 @@ async function backfillHistory(ws, market) {
 
 function connect(market) {
     const myId = ++socketId;
-    const ws = new WebSocket(WS_URL);
+    const url = endpointList[epIdx % endpointList.length];
+    feed.url = url;
+    feed.gotData = false;
+    symKey = /api\.derivws\.com/.test(url) ? 'underlying_symbol' : 'symbol';
+    const ws = new WebSocket(url);
     socket = ws;
     feed.connectAt = Date.now();
     feed.triedFallback = false;
@@ -410,9 +431,14 @@ function connect(market) {
             return;
         }
 
+        if (!data.error && data.errors && data.errors.length) data.error = { code: data.errors[0].code, message: data.errors[0].message };
         if (data.error) {
             feed.lastError = (data.error.code || 'error') + ': ' + data.error.message;
             console.warn('Deriv API error:', feed.lastError);
+            if (!feed.gotData && /app.?id|application|unauthori[sz]ed|forbidden/i.test(feed.lastError)) {
+                rotateEndpoint(feed.lastError);
+                return;
+            }
             const echo = data.echo_req || {};
             if (echo.ticks_history) {
                 // history rejected: retry smaller once, then fall back to the plain tick stream
@@ -423,6 +449,7 @@ function connect(market) {
         }
 
         if (data.history && data.history.prices && data.history.prices.length) {
+            markWorking();
             clearTimeout(historyTimer);
             if (data.pip_size !== undefined) pipSize = data.pip_size;
             priceHistory = data.history.prices.map(Number);
@@ -435,6 +462,7 @@ function connect(market) {
         }
 
         if (data.tick) {
+            markWorking();
             clearTimeout(historyTimer);
             if (data.tick.pip_size !== undefined) pipSize = data.tick.pip_size;
             const q = Number(data.tick.quote);
@@ -455,11 +483,31 @@ function connect(market) {
     ws.onclose = function () {
         if (myId !== socketId) return;
         clearInterval(pingTimer);
-        if (currentMarket === market) {
-            reconnectTimer = setTimeout(function () { connect(market); }, reconnectDelay);
-            reconnectDelay = Math.min(reconnectDelay * 2, 15000);
-        }
+        if (currentMarket !== market) return;
+        if (!feed.gotData) { rotateEndpoint('connection closed before any data'); return; }
+        reconnectTimer = setTimeout(function () { connect(market); }, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 15000);
     };
+}
+
+function markWorking() {
+    if (feed.gotData) return;
+    feed.gotData = true;
+    try { localStorage.setItem(ENDPOINT_KEY, feed.url); } catch (e) {}
+}
+
+// Current endpoint failed: move to the next one (fast on the first pass, slower once all have failed)
+function rotateEndpoint(reason) {
+    if (!currentMarket) return;
+    const market = currentMarket;
+    feed.rotations++;
+    if (reason) feed.lastError = ((feed.lastError ? feed.lastError + ' | ' : '') + 'endpoint failed (' + feed.url.replace(/^wss:\/\//, '').split('?')[0] + '): ' + reason).slice(-420);
+    socketId++;
+    clearConnTimers();
+    if (socket) { try { socket.close(); } catch (e) {} }
+    epIdx = (epIdx + 1) % endpointList.length;
+    const delay = feed.rotations < endpointList.length ? 300 : 3000;
+    reconnectTimer = setTimeout(function () { if (currentMarket === market) connect(market); }, delay);
 }
 
 // Watchdog: silent/half-dead sockets (common on mobile) get replaced automatically
@@ -467,6 +515,10 @@ setInterval(function () {
     if (!currentMarket) return;
     const now = Date.now();
     if (now - feed.connectAt < CFG.WATCHDOG_GRACE_MS) return;                          // give a fresh connection time
+    if (!feed.gotData && socket && socket.readyState === 1 && now - feed.connectAt > CFG.WATCHDOG_GRACE_MS) {
+        rotateEndpoint('connected but no data');
+        return;
+    }
     const dead = !socket || socket.readyState > 1;
     const silent = socket && socket.readyState === 1 && now - (lastTickAt || feed.connectAt) > CFG.WATCHDOG_SILENT_MS;
     if (dead || silent) {
@@ -491,7 +543,7 @@ function waitForFeed(maxMs) {
 
 function feedDiagnostic() {
     const st = socket ? ['connecting', 'open', 'closing', 'closed'][socket.readyState] : 'no socket';
-    return `socket ${st}, mode ${feed.mode}, messages ${feed.msgs}, ticks stored ${tickHistory.length}` +
+    return `endpoint ${feed.url.replace(/^wss:\/\//, '').split('?')[0]}, socket ${st}, mode ${feed.mode}, messages ${feed.msgs}, ticks stored ${tickHistory.length}` +
         (feed.lastError ? `, last error: ${feed.lastError}` : '');
 }
 
@@ -512,6 +564,8 @@ function updateMarket() {
     activeSignal = null;
     currentMarket = market || "";
     lastTickAt = 0;
+    pipSize = DEFAULT_PIPS[market] !== undefined ? DEFAULT_PIPS[market] : 2;
+    feed.rotations = 0;
     feed.lastError = '';
     feed.msgs = 0;
     if (market) connect(market);
@@ -531,16 +585,25 @@ function pct(x) { return (x * 100).toFixed(1) + '%'; }
 async function getBreakeven(spec, fair) {
     const req = {
         proposal: 1, amount: CFG.STAKE, basis: 'stake', contract_type: spec.type,
-        currency: CFG.CURRENCY, duration: spec.ticks, duration_unit: 't', symbol: currentMarket
+        currency: CFG.CURRENCY, duration: spec.ticks, duration_unit: 't'
     };
     if (spec.barrier !== undefined) req.barrier = String(spec.barrier);
-    for (let attempt = 0; attempt < 3; attempt++) {        // retry before falling back to an estimate
+    let flipped = false;
+    for (let attempt = 0; attempt < 4; attempt++) {        // retry before falling back to an estimate
         try {
+            req[symKey || 'symbol'] = currentMarket;
             const r = await wsRequest(req, 4000);
             const ask = Number(r.proposal.ask_price), payout = Number(r.proposal.payout);
             if (!(ask > 0 && payout > 0)) throw new Error('bad quote');
             return { be: ask / payout, ask: ask, payout: payout, source: 'live' };
         } catch (e) {
+            if (!flipped && /symbol|propert|additional|unexpected|unknown|required/i.test(e.message)) {
+                // wrong field name for this API generation: switch once and retry
+                flipped = true;
+                delete req[symKey || 'symbol'];
+                symKey = (symKey === 'symbol') ? 'underlying_symbol' : 'symbol';
+                continue;
+            }
             if (/not (available|offered)|invalid|duration/i.test(e.message)) break;   // retrying will not help
             await new Promise(function (res) { setTimeout(res, 300 * (attempt + 1)); });
         }
