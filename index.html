@@ -280,7 +280,9 @@ const CFG = {
     MIN_FORWARD_N: 30,       // resolved signals needed before forward-test conclusions
     LOG_KEY: 'dss_signal_log_v1',
     LOG_MAX: 500,
-    STALE_FEED_MS: 15000
+    STALE_FEED_MS: 15000,
+    WATCHDOG_GRACE_MS: 12000,   // new connections are left alone this long
+    WATCHDOG_SILENT_MS: 25000   // no ticks for this long on an open socket = reconnect
 };
 
 /* ===================== DATA LAYER ===================== */
@@ -328,16 +330,66 @@ function clearConnTimers() {
     reconnectTimer = null;
 }
 
+const feed = { mode: 'none', lastError: '', msgs: 0, connectAt: 0, historyCount: CFG.HISTORY, triedFallback: false };
+let historyTimer = null;
+
+function sendHistoryRequest(ws, market, count) {
+    feed.mode = 'history';
+    feed.historyCount = count;
+    ws.send(JSON.stringify({ ticks_history: market, end: 'latest', count: count, style: 'ticks', subscribe: 1 }));
+    clearTimeout(historyTimer);
+    // if nothing comes back, fall back to the plain tick stream the original app used
+    historyTimer = setTimeout(function () {
+        if (ws === socket && !lastTickAt) startPlainTicks(ws, market);
+    }, 6000);
+}
+
+let firstLiveEpoch = 0;
+
+function startPlainTicks(ws, market) {
+    if (feed.triedFallback || ws.readyState !== 1) return;
+    feed.triedFallback = true;
+    feed.mode = 'ticks';
+    firstLiveEpoch = 0;
+    ws.send(JSON.stringify({ ticks: market, subscribe: 1 }));
+    backfillHistory(ws, market);
+}
+
+// One-shot (non-subscribed) history request, merged in front of the live ticks already received
+async function backfillHistory(ws, market) {
+    for (const count of [CFG.HISTORY, 1000]) {
+        try {
+            const r = await wsRequest({ ticks_history: market, end: 'latest', count: count, style: 'ticks' }, 8000);
+            if (ws !== socket || market !== currentMarket) return;
+            const prices = (r.history && r.history.prices) || [], times = (r.history && r.history.times) || [];
+            if (r.pip_size !== undefined) pipSize = r.pip_size;
+            const keepTo = firstLiveEpoch || Infinity;
+            const older = [];
+            for (let i = 0; i < prices.length; i++) if (times[i] < keepTo) older.push(Number(prices[i]));
+            if (!older.length) return;
+            priceHistory = older.concat(priceHistory);
+            tickHistory = older.map(digitOf).concat(tickHistory);
+            trimHistory();
+            feed.mode = 'ticks+history';
+            return;
+        } catch (e) {
+            feed.lastError = feed.lastError || ('history backfill: ' + e.message);
+        }
+    }
+}
+
 function connect(market) {
     const myId = ++socketId;
     const ws = new WebSocket(WS_URL);
     socket = ws;
+    feed.connectAt = Date.now();
+    feed.triedFallback = false;
+    feed.mode = 'none';
 
     ws.onopen = function () {
         if (myId !== socketId) return;
         reconnectDelay = 1000;
-        // 1000 ticks of history + live subscription in one request
-        ws.send(JSON.stringify({ ticks_history: market, end: 'latest', count: CFG.HISTORY, style: 'ticks', subscribe: 1 }));
+        sendHistoryRequest(ws, market, CFG.HISTORY);
         detectRfTicks(market);
         pingTimer = setInterval(function () {
             if (ws.readyState === 1) ws.send(JSON.stringify({ ping: 1 }));
@@ -348,6 +400,7 @@ function connect(market) {
         if (myId !== socketId) return;           // ignore stale sockets
         let data;
         try { data = JSON.parse(event.data); } catch (e) { return; }
+        feed.msgs++;
 
         if (data.req_id && pendingReq.has(data.req_id)) {
             const p = pendingReq.get(data.req_id);
@@ -357,22 +410,36 @@ function connect(market) {
             return;
         }
 
-        if (data.history && data.history.prices) {
+        if (data.error) {
+            feed.lastError = (data.error.code || 'error') + ': ' + data.error.message;
+            console.warn('Deriv API error:', feed.lastError);
+            const echo = data.echo_req || {};
+            if (echo.ticks_history) {
+                // history rejected: retry smaller once, then fall back to the plain tick stream
+                if (feed.historyCount > 1000) sendHistoryRequest(ws, market, 1000);
+                else startPlainTicks(ws, market);
+            }
+            return;
+        }
+
+        if (data.history && data.history.prices && data.history.prices.length) {
+            clearTimeout(historyTimer);
             if (data.pip_size !== undefined) pipSize = data.pip_size;
             priceHistory = data.history.prices.map(Number);
             tickHistory = priceHistory.map(digitOf);
             trimHistory();
             pendingSignals = [];                  // a reconnect may leave a gap: void open paper signals
             lastTickAt = Date.now();
-            const last = priceHistory[priceHistory.length - 1];
-            if (last !== undefined) showTick(last);
+            showTick(priceHistory[priceHistory.length - 1]);
             return;
         }
 
         if (data.tick) {
+            clearTimeout(historyTimer);
             if (data.tick.pip_size !== undefined) pipSize = data.tick.pip_size;
             const q = Number(data.tick.quote);
             const d = digitOf(q);
+            if (!firstLiveEpoch && data.tick.epoch) firstLiveEpoch = data.tick.epoch;
             lastTickAt = Date.now();
             priceHistory.push(q);
             tickHistory.push(d);
@@ -383,7 +450,7 @@ function connect(market) {
         }
     };
 
-    ws.onerror = function () { /* onclose handles recovery */ };
+    ws.onerror = function () { feed.lastError = feed.lastError || 'WebSocket error (network or blocked connection)'; };
 
     ws.onclose = function () {
         if (myId !== socketId) return;
@@ -393,6 +460,39 @@ function connect(market) {
             reconnectDelay = Math.min(reconnectDelay * 2, 15000);
         }
     };
+}
+
+// Watchdog: silent/half-dead sockets (common on mobile) get replaced automatically
+setInterval(function () {
+    if (!currentMarket) return;
+    const now = Date.now();
+    if (now - feed.connectAt < CFG.WATCHDOG_GRACE_MS) return;                          // give a fresh connection time
+    const dead = !socket || socket.readyState > 1;
+    const silent = socket && socket.readyState === 1 && now - (lastTickAt || feed.connectAt) > CFG.WATCHDOG_SILENT_MS;
+    if (dead || silent) {
+        socketId++;
+        clearConnTimers();
+        if (socket) { try { socket.close(); } catch (e) {} }
+        connect(currentMarket);
+    }
+}, 5000);
+
+// Waits until live data is flowing (used before every analysis)
+function waitForFeed(maxMs) {
+    return new Promise(function (resolve) {
+        const t0 = Date.now();
+        (function poll() {
+            if (lastTickAt && Date.now() - lastTickAt < CFG.STALE_FEED_MS && tickHistory.length) return resolve(true);
+            if (Date.now() - t0 > maxMs) return resolve(false);
+            setTimeout(poll, 250);
+        })();
+    });
+}
+
+function feedDiagnostic() {
+    const st = socket ? ['connecting', 'open', 'closing', 'closed'][socket.readyState] : 'no socket';
+    return `socket ${st}, mode ${feed.mode}, messages ${feed.msgs}, ticks stored ${tickHistory.length}` +
+        (feed.lastError ? `, last error: ${feed.lastError}` : '');
 }
 
 function showTick(q) {
@@ -411,6 +511,9 @@ function updateMarket() {
     pendingSignals = [];
     activeSignal = null;
     currentMarket = market || "";
+    lastTickAt = 0;
+    feed.lastError = '';
+    feed.msgs = 0;
     if (market) connect(market);
 }
 
@@ -709,14 +812,13 @@ async function analyzeResults(strategy, token) {
     const verdicts = [];
 
     try {
+        if (!(await waitForFeed(10000))) {
+            add(`<p class="red">No live ticks received. ${feedDiagnostic()}.</p><p class="red">Check your connection, then re-select the market and try again.</p>`);
+            return;
+        }
         const nAll = tickHistory.length;
         const lastDigits = tickHistory.slice(-CFG.WINDOW);
         const n30 = lastDigits.length;
-
-        if (!n30 || Date.now() - lastTickAt > CFG.STALE_FEED_MS) {
-            add('<p class="red">Feed is stale or empty. Analysis skipped. Re-select the market and try again.</p>');
-            return;
-        }
         if (nAll < CFG.MIN_SAMPLE) {
             add(`<p class="red">Only ${nAll} ticks available (need ${CFG.MIN_SAMPLE}). Verdicts will be unreliable.</p>`);
         }
